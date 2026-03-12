@@ -21,17 +21,26 @@ MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-RETRIEVAL_K = 10
+RETRIEVAL_K = 15
+N_QUERIES = 3  # Number of sub-queries for multi-query retrieval
 
 SYSTEM_PROMPT = """
 You are a knowledgeable, friendly assistant representing the company Insurellm.
 You are chatting with a user about Insurellm.
-Your answer will be evaluated for accuracy, relevance and completeness, so make sure it only answers the question and fully answers it.
+Your answer will be evaluated for accuracy, relevance and completeness.
+
+COMPLETENESS REQUIREMENTS:
+- Include ALL relevant facts, figures, names, and dates from the context
+- If the question asks for a list or multiple items, provide the COMPLETE list — never truncate it
+- If there are multiple aspects to the question, address every single one
+- Include supporting details (e.g. job titles, locations, exact numbers) that make the answer fully informative
+- Do NOT omit relevant information that is present in the context
+
 If you don't know the answer, say so.
 For context, here are specific extracts from the Knowledge Base that might be directly relevant to the user's question:
 {context}
 
-With this context, please answer the user's question. Be accurate, relevant and complete.
+With this context, please answer the user's question. Be accurate, relevant and fully comprehensive.
 """
 
 vectorstore = Chroma(persist_directory=DB_NAME, embedding_function=embeddings)
@@ -145,9 +154,38 @@ def fetch_context_unranked(question: str) -> list[Document]:
                 raise last_error
 
 
-def fetch_context(question):
-    chunks = fetch_context_unranked(question)
-    return rerank(question, chunks)
+def generate_sub_queries(question: str, n: int = N_QUERIES - 1) -> list[str]:
+    """Generate n alternative search queries to improve retrieval coverage."""
+    message = f"""You are searching a Knowledge Base about the company Insurellm to answer this question:
+
+{question}
+
+Generate {n} different search queries that together will help find ALL information needed to fully answer this question.
+Each query should target a different aspect or use different terminology than the original.
+Respond with exactly {n} queries, one per line, nothing else.
+"""
+    response = llm.invoke([SystemMessage(content=message)])
+    return [q.strip() for q in response.content.strip().split("\n") if q.strip()][:n]
+
+
+def fetch_context(question: str) -> list[Document]:
+    """
+    Retrieve context using multi-query strategy for better coverage.
+    Generates sub-queries, retrieves docs for each, deduplicates, then reranks.
+    """
+    queries = [question] + generate_sub_queries(question)
+
+    all_docs = []
+    seen_content = set()
+    for query in queries:
+        for doc in fetch_context_unranked(query):
+            content_hash = hash(doc.page_content)
+            if content_hash not in seen_content:
+                seen_content.add(content_hash)
+                all_docs.append(doc)
+
+    reranked = rerank(question, all_docs)
+    return reranked[:15]  # Top 15 after reranking
 
 
 
