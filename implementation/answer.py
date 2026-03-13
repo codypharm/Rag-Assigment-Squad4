@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+import hashlib
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import SystemMessage, HumanMessage, convert_to_messages
@@ -14,24 +15,36 @@ load_dotenv(override=True)
 
 MODEL = "gpt-5-mini"
 DB_NAME = str(Path(__file__).parent.parent / "vector_db")
+MAX_RERANK_DOCS = 60 
 
-# Retry on connection/rate-limit errors (transient SSL, network, 429)
 RETRY_EXCEPTIONS = (APIConnectionError, RateLimitError, ConnectionError, OSError)
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-RETRIEVAL_K = 10
+RETRIEVAL_K = 25
+N_QUERIES = 5  
 
 SYSTEM_PROMPT = """
 You are a knowledgeable, friendly assistant representing the company Insurellm.
 You are chatting with a user about Insurellm.
-Your answer will be evaluated for accuracy, relevance and completeness, so make sure it only answers the question and fully answers it.
+Your answer will be evaluated for accuracy, relevance and completeness.
+
+COMPLETENESS REQUIREMENTS:
+- Include ALL relevant facts, figures, names, and dates from the context
+- If the question asks for a list or multiple items, provide the COMPLETE list — never truncate it
+- If there are multiple aspects to the question, address every single one
+- Include supporting details (e.g. job titles, locations, exact numbers) that make the answer fully informative
+- Do NOT omit relevant information that is present in the context
+- If the question has multiple sub-questions, answer each one explicitly in its own sentence or bullet, so that nothing is implicitly assumed.
+- If the question uses words like "all", "any", "which", or "what are", ensure you enumerate every relevant item from the context instead of summarizing them away.
+- At the end of your reasoning, quickly check if there are any remaining relevant details in the context that you have not mentioned yet, and add them to your answer.
+
 If you don't know the answer, say so.
 For context, here are specific extracts from the Knowledge Base that might be directly relevant to the user's question:
 {context}
 
-With this context, please answer the user's question. Be accurate, relevant and complete.
+With this context, please answer the user's question. Be accurate, relevant and fully comprehensive.
 """
 
 vectorstore = Chroma(persist_directory=DB_NAME, embedding_function=embeddings)
@@ -145,9 +158,45 @@ def fetch_context_unranked(question: str) -> list[Document]:
                 raise last_error
 
 
-def fetch_context(question):
-    chunks = fetch_context_unranked(question)
-    return rerank(question, chunks)
+def generate_sub_queries(question: str, n: int = N_QUERIES - 1) -> list[str]:
+    """Generate n alternative search queries to improve retrieval coverage."""
+    message = f"""You are searching a Knowledge Base about the company Insurellm to answer this question:
+
+{question}
+
+Generate {n} different search queries that together will help find ALL information needed to fully answer this question.
+Each query should target a different aspect or use different terminology than the original.
+Respond with exactly {n} queries, one per line, nothing else.
+"""
+    response = llm.invoke([SystemMessage(content=message)])
+    return [q.strip() for q in response.content.strip().split("\n") if q.strip()][:n]
+
+
+def fetch_context(question: str) -> list[Document]:
+    """
+    Retrieve context using multi-query strategy for better coverage.
+    Generates sub-queries, retrieves docs for each, deduplicates, then reranks.
+    """
+    queries = [question] + generate_sub_queries(question)
+
+    all_docs: list[Document] = []
+    seen_content = set()
+    for query in queries:
+        if len(all_docs) >= MAX_RERANK_DOCS:
+            break
+        for doc in fetch_context_unranked(query):
+            if len(all_docs) >= MAX_RERANK_DOCS:
+                break
+            content_key = hashlib.sha256(doc.page_content.encode("utf-8")).hexdigest()
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                all_docs.append(doc)
+
+    if not all_docs:
+        return []
+
+    reranked = rerank(question, all_docs)
+    return reranked[:15]  # Top 15 after reranking
 
 
 
@@ -165,6 +214,7 @@ And this is the user's current question:
 
 Respond only with a single, refined question that you will use to search the Knowledge Base with focus on completeness of answers from the knowledge base.
 It should be a VERY short specific question most likely to surface detailed content from the knowledge base. Focus on the question details.
+Make sure the refined question still covers every aspect of the user's original question so that all required information can be retrieved.
 Don't mention the company name unless it's a general question about the company.
 IMPORTANT: Respond ONLY with the knowledgebase query, nothing else.
 """
