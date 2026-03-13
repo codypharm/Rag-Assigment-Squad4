@@ -5,7 +5,8 @@ from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from pydantic import BaseModel, Field
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_core.messages import  HumanMessage
+from langchain_core.messages import HumanMessage
+from langchain_core.documents import Document
 from tqdm import tqdm
 import uuid
 
@@ -66,7 +67,8 @@ class DocumentChunks(BaseModel):
     """
 
     doc_index: int = Field(
-        description="1-based index of the document in the batch this chunk list belongs to."
+        description="1-based index of the document in the batch this chunk list belongs to.",
+        ge=1,
     )
     chunks: list[Chunk]
 
@@ -135,7 +137,7 @@ def process_document(document):
     return [chunk.as_result(document) for chunk in chunks_result.chunks]
 
 
-def make_batch_prompt(documents: list[object]) -> str:
+def make_batch_prompt(documents: list[Document]) -> str:
     """Build a prompt that asks the LLM to chunk multiple documents at once.
 
     Each document is given an index; the model must return chunks grouped per document.
@@ -182,7 +184,7 @@ def make_batch_prompt(documents: list[object]) -> str:
     return "\n".join(parts)
 
 
-def process_documents_batch(documents: list[object]) -> list[Result]:
+def process_documents_batch(documents: list[Document]) -> list[Result]:
     """Chunk multiple documents in a single LLM call.
 
     This reduces the number of requests by batching documents together while
@@ -196,15 +198,24 @@ def process_documents_batch(documents: list[object]) -> list[Result]:
     batch_result = batch_llm.invoke(messages)
 
     results: list[Result] = []
+    used_indices: set[int] = set()
+
     for doc_group in batch_result.documents:
-        # doc_index is 1-based in the LLM response
         idx = doc_group.doc_index - 1
         if idx < 0 or idx >= len(documents):
-            # Ignore any malformed indices from the LLM
             continue
+        used_indices.add(idx)
         document = documents[idx]
         for chunk in doc_group.chunks:
             results.append(chunk.as_result(document))
+
+    # Fallback: ensure every document in this batch is processed at least once.
+    # If the LLM failed to return a valid doc_index for a document, fall back
+    # to per-document processing so we do not silently drop it.
+    for idx, document in enumerate(documents):
+        if idx not in used_indices:
+            fallback_results = process_document(document)
+            results.extend(fallback_results)
 
     return results
 
@@ -215,6 +226,10 @@ def create_chunks(documents, batch_size: int = 3):
     `batch_size` controls how many documents are sent in one prompt. Increasing it
     will generally reduce total request overhead, at the cost of larger prompts.
     """
+    # Ensure batch_size is always a positive step for range().
+    if batch_size <= 0:
+        batch_size = 1
+
     chunks: list[Result] = []
     # Process documents in batches to reduce total number of LLM calls.
     for i in tqdm(range(0, len(documents), batch_size)):

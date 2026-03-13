@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+import hashlib
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import SystemMessage, HumanMessage, convert_to_messages
@@ -14,15 +15,15 @@ load_dotenv(override=True)
 
 MODEL = "gpt-5-mini"
 DB_NAME = str(Path(__file__).parent.parent / "vector_db")
+MAX_RERANK_DOCS = 60 
 
-# Retry on connection/rate-limit errors (transient SSL, network, 429)
 RETRY_EXCEPTIONS = (APIConnectionError, RateLimitError, ConnectionError, OSError)
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 RETRIEVAL_K = 25
-N_QUERIES = 5  # Number of sub-queries for multi-query retrieval
+N_QUERIES = 5  
 
 SYSTEM_PROMPT = """
 You are a knowledgeable, friendly assistant representing the company Insurellm.
@@ -178,13 +179,17 @@ def fetch_context(question: str) -> list[Document]:
     """
     queries = [question] + generate_sub_queries(question)
 
-    all_docs = []
+    all_docs: list[Document] = []
     seen_content = set()
     for query in queries:
+        if len(all_docs) >= MAX_RERANK_DOCS:
+            break
         for doc in fetch_context_unranked(query):
-            content_hash = hash(doc.page_content)
-            if content_hash not in seen_content:
-                seen_content.add(content_hash)
+            if len(all_docs) >= MAX_RERANK_DOCS:
+                break
+            content_key = hashlib.sha256(doc.page_content.encode("utf-8")).hexdigest()
+            if content_key not in seen_content:
+                seen_content.add(content_key)
                 all_docs.append(doc)
 
     reranked = rerank(question, all_docs)
