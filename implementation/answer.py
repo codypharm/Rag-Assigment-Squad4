@@ -21,8 +21,8 @@ MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-RETRIEVAL_K = 15
-N_QUERIES = 3  # Number of sub-queries for multi-query retrieval
+RETRIEVAL_K = 25
+N_QUERIES = 5  # Number of sub-queries for multi-query retrieval
 
 SYSTEM_PROMPT = """
 You are a knowledgeable, friendly assistant representing the company Insurellm.
@@ -35,6 +35,9 @@ COMPLETENESS REQUIREMENTS:
 - If there are multiple aspects to the question, address every single one
 - Include supporting details (e.g. job titles, locations, exact numbers) that make the answer fully informative
 - Do NOT omit relevant information that is present in the context
+ - If the question has multiple sub-questions, answer each one explicitly in its own sentence or bullet, so that nothing is implicitly assumed.
+ - If the question uses words like "all", "any", "which", or "what are", ensure you enumerate every relevant item from the context instead of summarizing them away.
+ - At the end of your reasoning, quickly check if there are any remaining relevant details in the context that you have not mentioned yet, and add them to your answer.
 
 If you don't know the answer, say so.
 For context, here are specific extracts from the Knowledge Base that might be directly relevant to the user's question:
@@ -203,6 +206,7 @@ And this is the user's current question:
 
 Respond only with a single, refined question that you will use to search the Knowledge Base with focus on completeness of answers from the knowledge base.
 It should be a VERY short specific question most likely to surface detailed content from the knowledge base. Focus on the question details.
+Make sure the refined question still covers every aspect of the user's original question so that all required information can be retrieved.
 Don't mention the company name unless it's a general question about the company.
 IMPORTANT: Respond ONLY with the knowledgebase query, nothing else.
 """
