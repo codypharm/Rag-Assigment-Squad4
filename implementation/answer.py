@@ -35,9 +35,9 @@ COMPLETENESS REQUIREMENTS:
 - If there are multiple aspects to the question, address every single one
 - Include supporting details (e.g. job titles, locations, exact numbers) that make the answer fully informative
 - Do NOT omit relevant information that is present in the context
- - If the question has multiple sub-questions, answer each one explicitly in its own sentence or bullet, so that nothing is implicitly assumed.
- - If the question uses words like "all", "any", "which", or "what are", ensure you enumerate every relevant item from the context instead of summarizing them away.
- - At the end of your reasoning, quickly check if there are any remaining relevant details in the context that you have not mentioned yet, and add them to your answer.
+- If the question has multiple sub-questions, answer each one explicitly in its own sentence or bullet, so that nothing is implicitly assumed.
+- If the question uses words like "all", "any", "which", or "what are", ensure you enumerate every relevant item from the context instead of summarizing them away.
+- At the end of your reasoning, quickly check if there are any remaining relevant details in the context that you have not mentioned yet, and add them to your answer.
 
 If you don't know the answer, say so.
 For context, here are specific extracts from the Knowledge Base that might be directly relevant to the user's question:
