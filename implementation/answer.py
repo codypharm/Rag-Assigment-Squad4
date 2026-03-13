@@ -15,14 +15,17 @@ load_dotenv(override=True)
 
 MODEL = "gpt-5-mini"
 DB_NAME = str(Path(__file__).parent.parent / "vector_db")
-MAX_RERANK_DOCS = 60 
+MAX_RERANK_DOCS = 60
+
+# Max characters of context to send to the answer LLM (team guideline).
+MAX_CONTEXT_CHARS = 5000
 
 RETRY_EXCEPTIONS = (APIConnectionError, RateLimitError, ConnectionError, OSError)
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-RETRIEVAL_K = 25
+RETRIEVAL_K = 10
 N_QUERIES = 5  
 
 SYSTEM_PROMPT = """
@@ -222,15 +225,36 @@ IMPORTANT: Respond ONLY with the knowledgebase query, nothing else.
     return response.content
 
 
+def _context_within_limit(docs: list[Document], max_chars: int = MAX_CONTEXT_CHARS) -> str:
+    """Build context string from docs without exceeding max_chars. Docs are in rerank order (most relevant first)."""
+    if not docs:
+        return ""
+    first = docs[0].page_content
+    if len(first) >= max_chars:
+        return first[:max_chars]
+    parts = [first]
+    total = len(first)
+    sep = "\n\n"
+    sep_len = len(sep)
+    for doc in docs[1:]:
+        content = doc.page_content
+        need = len(content) + sep_len
+        if total + need > max_chars:
+            break
+        parts.append(content)
+        total += need
+    return sep.join(parts)
+
+
 def answer_question(question: str, history: list[dict] = []) -> tuple[str, list[Document]]:
     """
     Answer the given question with RAG; return the answer and the context documents.
     """
-    
+        
     query = rewrite_query(question, history)
     print(query)
     docs = fetch_context(query)
-    context = "\n\n".join(doc.page_content for doc in docs)
+    context = _context_within_limit(docs)
     system_prompt = SYSTEM_PROMPT.format(context=context)
     messages = [SystemMessage(content=system_prompt)]
     messages.extend(convert_to_messages(history))
