@@ -204,8 +204,11 @@ def process_documents_batch(documents: list[Document]) -> list[Result]:
         idx = doc_group.doc_index - 1
         if idx < 0 or idx >= len(documents):
             continue
-        used_indices.add(idx)
         document = documents[idx]
+        # Treat an empty chunks list as a failure so the fallback can handle it.
+        if not doc_group.chunks:
+            continue
+        used_indices.add(idx)
         for chunk in doc_group.chunks:
             results.append(chunk.as_result(document))
 

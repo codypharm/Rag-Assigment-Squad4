@@ -192,6 +192,9 @@ def fetch_context(question: str) -> list[Document]:
                 seen_content.add(content_key)
                 all_docs.append(doc)
 
+    if not all_docs:
+        return []
+
     reranked = rerank(question, all_docs)
     return reranked[:15]  # Top 15 after reranking
 
