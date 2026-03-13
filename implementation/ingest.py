@@ -58,6 +58,28 @@ class Chunks(BaseModel):
 
 
 
+class DocumentChunks(BaseModel):
+    """Chunks associated with a particular document in a batch.
+
+    The `doc_index` field is 1-based and refers to the position of the document
+    in the batch that was sent to the LLM.
+    """
+
+    doc_index: int = Field(
+        description="1-based index of the document in the batch this chunk list belongs to."
+    )
+    chunks: list[Chunk]
+
+
+class BatchChunks(BaseModel):
+    """Structured response for multiple documents chunked in a single LLM call."""
+
+    documents: list[DocumentChunks] = Field(
+        description="For each input document, the chunks that cover that document."
+    )
+
+
+
 def fetch_documents():
     # List all top-level folders under the knowledge base.
     folders = glob.glob(str(Path(KNOWLEDGE_BASE) / "*"))
@@ -106,18 +128,98 @@ def make_prompt(document):
 
 
 def process_document(document):
-    messages = [
-        HumanMessage(content=make_prompt(document))
-    ]
-    # Create structured LLM for Chunks response format
+    """Keep single-document processing available (e.g. for debugging)."""
+    messages = [HumanMessage(content=make_prompt(document))]
     chunk_llm = llm.with_structured_output(Chunks)
     chunks_result = chunk_llm.invoke(messages)
     return [chunk.as_result(document) for chunk in chunks_result.chunks]
 
-def create_chunks(documents):
-    chunks = []
-    for doc in tqdm(documents):
-        chunks.extend(process_document(doc))
+
+def make_batch_prompt(documents: list[object]) -> str:
+    """Build a prompt that asks the LLM to chunk multiple documents at once.
+
+    Each document is given an index; the model must return chunks grouped per document.
+    """
+    parts: list[str] = [
+        "You will take multiple documents and split EACH document into overlapping chunks for a Knowledge Base.",
+        "",
+        "GENERAL INSTRUCTIONS (APPLY TO EVERY DOCUMENT):",
+        "- The documents are from the shared drive of a company called Insurellm.",
+        "- For EACH document, you must return chunks that TOGETHER cover the ENTIRE document.",
+        "- Do NOT omit any parts of any document; ensure every sentence appears in at least one chunk.",
+        "- Use overlapping chunks (about 25% overlap or ~50 words) so important text appears in multiple chunks.",
+        "- For each chunk, provide a headline, a summary, and the original text of the chunk.",
+        "- Focus on **completeness and relevance** of the chunks so that a RAG system can later answer questions fully.",
+        "",
+        "You will receive several documents. For EACH document you must return:",
+        "- Its 1-based `doc_index` (matching the index provided below).",
+        "- A list of chunks for that single document only.",
+        "",
+        "IMPORTANT:",
+        "- Never mix content from different documents into the same chunk.",
+        "- For every document index I provide, you must return at least one chunk.",
+        "- Together, your chunks for a document must represent the entire document with overlap.",
+        "",
+        "Here are the documents:",
+    ]
+
+    for idx, document in enumerate(documents, start=1):
+        how_many = (len(document.page_content) // AVERAGE_CHUNK_SIZE) + 1
+        doc_type = document.metadata.get("doc_type")
+        source = document.metadata.get("source")
+        parts.append(
+            f"\n---\nDOCUMENT {idx}:\n"
+            f"- doc_index: {idx}\n"
+            f"- type: {doc_type}\n"
+            f"- source: {source}\n"
+            f"- suggested_number_of_chunks: {how_many}\n\n"
+            f"{document.page_content}\n"
+        )
+
+    parts.append(
+        "\nRespond with a structured JSON object describing ALL documents and their chunks."
+    )
+    return "\n".join(parts)
+
+
+def process_documents_batch(documents: list[object]) -> list[Result]:
+    """Chunk multiple documents in a single LLM call.
+
+    This reduces the number of requests by batching documents together while
+    still preserving which chunks belong to which original document.
+    """
+    if not documents:
+        return []
+
+    messages = [HumanMessage(content=make_batch_prompt(documents))]
+    batch_llm = llm.with_structured_output(BatchChunks)
+    batch_result = batch_llm.invoke(messages)
+
+    results: list[Result] = []
+    for doc_group in batch_result.documents:
+        # doc_index is 1-based in the LLM response
+        idx = doc_group.doc_index - 1
+        if idx < 0 or idx >= len(documents):
+            # Ignore any malformed indices from the LLM
+            continue
+        document = documents[idx]
+        for chunk in doc_group.chunks:
+            results.append(chunk.as_result(document))
+
+    return results
+
+
+def create_chunks(documents, batch_size: int = 3):
+    """Create chunks for all documents, batching several documents per LLM call.
+
+    `batch_size` controls how many documents are sent in one prompt. Increasing it
+    will generally reduce total request overhead, at the cost of larger prompts.
+    """
+    chunks: list[Result] = []
+    # Process documents in batches to reduce total number of LLM calls.
+    for i in tqdm(range(0, len(documents), batch_size)):
+        batch_docs = documents[i : i + batch_size]
+        chunks.extend(process_documents_batch(batch_docs))
     return chunks
 
 def create_embeddings(chunks):
