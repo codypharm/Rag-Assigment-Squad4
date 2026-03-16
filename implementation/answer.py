@@ -26,7 +26,7 @@ RETRY_BASE_DELAY = 2.0
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 RETRIEVAL_K = 10
-N_QUERIES = 5  
+N_QUERIES = 5
 
 SYSTEM_PROMPT = """
 You are a knowledgeable, friendly assistant representing the company Insurellm.
@@ -62,13 +62,13 @@ class RankOrder(BaseModel):
         description="The order of relevance of chunks, from most relevant to least relevant, by chunk id number. Each ID must be unique and within the valid range.",
         min_length=1,
     )
-    
+
     def validate_against_chunks(self, num_chunks: int) -> bool:
         """Check if order contains valid, unique IDs for the given number of chunks."""
         return (
             len(self.order) == num_chunks and
-            len(set(self.order)) == num_chunks and  
-            all(1 <= i <= num_chunks for i in self.order)  
+            len(set(self.order)) == num_chunks and
+            all(1 <= i <= num_chunks for i in self.order)
         )
 
 def rerank(question, chunks):
@@ -96,37 +96,37 @@ CRITICAL REQUIREMENTS:
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
     ]
-    
+
     # Create structured LLM for this specific response format
     rank_llm = structured_llm.with_structured_output(RankOrder)
-    
+
     # Try to get valid response (with one retry)
     for attempt in range(2):
         rank_result = rank_llm.invoke(messages)
-        
+
         # Check if response is valid
         if rank_result.validate_against_chunks(num_chunks):
             print(f"LLM returned valid order: {rank_result.order}")
             return [chunks[i - 1] for i in rank_result.order]
-        
+
         print(f"Attempt {attempt + 1}: LLM returned invalid order: {rank_result.order} (expected {num_chunks} unique IDs)")
-        
+
         # On first failure, add a correction message and retry
         if attempt == 0:
             messages.append(HumanMessage(content=f"That response is invalid. You must return exactly {num_chunks} unique chunk IDs (1 to {num_chunks}). Try again."))
-    
+
     # If both attempts fail, fall back to validation logic
     order = rank_result.order
     print(f"LLM failed validation after retries. Falling back to repair logic.")
     print(f"LLM returned order: {order}, num_chunks: {num_chunks}")
-    
+
     # Validate and filter: keep only valid 1-indexed IDs within range
     valid_order = [i for i in order if 1 <= i <= len(chunks)]
-    
+
     # If LLM missed some chunks or returned invalid IDs, log a warning
     if len(valid_order) != len(chunks):
         print(f"Warning: LLM returned {len(order)} IDs but we have {len(chunks)} chunks. Using {len(valid_order)} valid IDs.")
-    
+
     # Deduplicate while preserving order (in case LLM returned duplicates)
     seen = set()
     reranked = []
@@ -134,13 +134,13 @@ CRITICAL REQUIREMENTS:
         if i not in seen:
             seen.add(i)
             reranked.append(chunks[i - 1])
-    
+
     # If some chunks are missing from reranked, append them at the end
     if len(reranked) < len(chunks):
         missing_indices = set(range(len(chunks))) - {i - 1 for i in valid_order}
         for idx in sorted(missing_indices):
             reranked.append(chunks[idx])
-    
+
     return reranked
 
 def fetch_context_unranked(question: str) -> list[Document]:
@@ -250,7 +250,7 @@ def answer_question(question: str, history: list[dict] = []) -> tuple[str, list[
     """
     Answer the given question with RAG; return the answer and the context documents.
     """
-        
+
     query = rewrite_query(question, history)
     print(query)
     docs = fetch_context(query)
@@ -261,4 +261,3 @@ def answer_question(question: str, history: list[dict] = []) -> tuple[str, list[
     messages.append(HumanMessage(content=question))
     response = llm.invoke(messages)
     return response.content, docs
-
